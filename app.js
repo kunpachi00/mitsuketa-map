@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.1.2';
+const APP_VERSION = '1.2.0';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -20,7 +20,7 @@ const CATS = [
 ];
 const CAT = Object.fromEntries(CATS.map(c => [c.id, c]));
 const TAGS = ['きれい', 'ちいさい', 'おおきい', 'たくさん', 'いいにおい', 'はじめて見た', 'かわいい', 'ふしぎ'];
-const ANIMALS = ['🐰', '🦉', '🐻', '🐱', '🐶', '🐼', '🦊', '🐧', '🐹', '🐨', '🐯', '🐸', '🐥', '🐿️', '🦄'];
+const ANIMALS = ['🐰', '🦉', '🐻', '🐱', '🐶', '🐼', '🦊', '🐧', '🐹', '🐨', '🐯', '🐸', '🐥', '🦄'];
 const BADGES = [
   { n: 5, icon: '🥉' }, { n: 10, icon: '🥈' }, { n: 30, icon: '🥇' }, { n: 50, icon: '👑' },
 ];
@@ -102,7 +102,14 @@ const S = {
 async function setSetting(key, value) { S.settings[key] = value; await dbPut('settings', { key, value }); }
 const liveRecords = () => [...S.records.values()].filter(r => !r.deleted);
 const memberOf = id => S.members.get(id);
-function memberLabel(id) { const m = memberOf(id); return m ? `${m.icon} ${esc(m.name)}` : '❔ だれか'; }
+// アイコンは絵文字か、アルバムから選んだ小さな画像（data URL）
+const ICON_IMG_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/;
+const ICON_IMG_MAX = 60000;
+const isImgIcon = s => typeof s === 'string' && s.startsWith('data:image/');
+function iconHTML(icon, inline = false) {
+  return isImgIcon(icon) ? `<img class="av-img${inline ? ' inl' : ''}" src="${esc(icon)}" alt="">` : esc(icon || '🙂');
+}
+function memberLabel(id) { const m = memberOf(id); return m ? `${iconHTML(m.icon, true)} ${esc(m.name)}` : '❔ だれか'; }
 
 // きせつ（見つけた月で決める）
 const SEASONS = [
@@ -218,26 +225,64 @@ function ask({ icon = '', title, text = '', ok = 'OK', cancel = 'やめる', dan
     });
   });
 }
+// 写真のまん中を正方形に切りとって、小さなアイコン画像にする
+async function makeIconImage(file) {
+  const img = await decodeImage(file);
+  const side = Math.min(img.width, img.height), size = 160;
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d'); g.imageSmoothingQuality = 'high';
+  g.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+  if (img.close) img.close();
+  return c.toDataURL('image/jpeg', 0.8);
+}
+// ＋（アルバムから）と どうぶつ の中から アイコンを えらぶ部品
+function iconPicker(initial, onChange) {
+  let icon = initial, custom = isImgIcon(initial) ? initial : null;
+  const el = h(`<div><div class="animal-grid"></div><input type="file" accept="image/*" hidden></div>`);
+  const grid = $('.animal-grid', el), file = $('input', el);
+  const set = v => { icon = v; render(); if (onChange) onChange(icon); };
+  function render() {
+    grid.innerHTML = `<button data-plus class="plus ${custom && icon === custom ? 'on' : ''}" aria-label="アルバムから えらぶ">${custom ? iconHTML(custom) : '＋'}</button>` +
+      ANIMALS.map(a => `<button data-a="${a}" class="${a === icon ? 'on' : ''}" aria-label="${a}">${a}</button>`).join('');
+  }
+  grid.addEventListener('click', e => {
+    const a = e.target.closest('[data-a]');
+    if (a) return set(a.dataset.a);
+    if (e.target.closest('[data-plus]')) {
+      if (custom && icon !== custom) set(custom); // 前に えらんだ画像に もどす
+      else file.click();
+    }
+  });
+  file.addEventListener('change', async () => {
+    const f = file.files && file.files[0]; file.value = '';
+    if (!f) return;
+    try { custom = await makeIconImage(f); set(custom); }
+    catch (e) { console.error(e); toast('この しゃしんは よめなかったよ'); }
+  });
+  render();
+  return { el, get: () => icon };
+}
+
 function memberDialog(member) {
   return new Promise(resolve => {
-    let icon = member?.icon || ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+    const first = member?.icon || ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
     const box = h(`<div>
-      <div class="m-icon" id="md-icon">${icon}</div>
+      <div class="m-icon" id="md-icon">${iconHTML(first)}</div>
       <h3>${member ? 'かぞくを なおす' : 'かぞくを ふやす'}</h3>
       <input class="text-in" id="md-name" maxlength="12" placeholder="なまえ（れい：ママ）" autocomplete="off">
-      <div class="animal-grid">${ANIMALS.map(a => `<button data-a="${a}" class="${a === icon ? 'on' : ''}" aria-label="${a}">${a}</button>`).join('')}</div>
+      <div id="md-picker"></div>
       <div class="m-btns"><button class="ok" data-v="1">✓ きめた</button><button data-v="0">やめる</button></div>
     </div>`);
     $('#md-name', box).value = member?.name || '';
+    const picker = iconPicker(first, v => { $('#md-icon', box).innerHTML = iconHTML(v); });
+    $('#md-picker', box).append(picker.el);
     const m = modal(box);
     box.addEventListener('click', e => {
-      const a = e.target.closest('[data-a]');
-      if (a) { icon = a.dataset.a; $('#md-icon', box).textContent = icon; $$('[data-a]', box).forEach(b => b.classList.toggle('on', b === a)); return; }
       const v = e.target.closest('[data-v]'); if (!v) return;
       if (v.dataset.v === '0') { m.close(); return resolve(null); }
       const name = $('#md-name', box).value.trim();
       if (!name) { $('#md-name', box).classList.add('shake'); setTimeout(() => $('#md-name', box).classList.remove('shake'), 500); return; }
-      m.close(); resolve({ name, icon });
+      m.close(); resolve({ name, icon: picker.get() });
     });
   });
 }
@@ -518,7 +563,7 @@ function openForm(existing, preset = null) {
     function renderWho() {
       const box = $('#f-who', el);
       box.innerHTML = [...S.members.values()].map(m =>
-        `<button class="who-btn ${m.id === f.authorId ? 'on' : ''}" data-who="${m.id}"><span class="avatar">${m.icon}</span>${esc(m.name)}</button>`).join('') +
+        `<button class="who-btn ${m.id === f.authorId ? 'on' : ''}" data-who="${m.id}"><span class="avatar">${iconHTML(m.icon)}</span>${esc(m.name)}</button>`).join('') +
         `<button class="who-btn add" data-act="addwho"><span class="avatar">＋</span>ふやす</button>`;
     }
     // 場所
@@ -838,7 +883,7 @@ function openFamily() {
     const owner = S.settings.deviceOwnerId;
     body.innerHTML = `<p class="muted">「この たんまつ」に した ${R('人', 'ひと')}が、きろくする ときの さいしょの「だれが」に なるよ。</p>
       ${[...S.members.values()].map(m => `<div class="fam-row">
-        <button class="avatar" data-edit="${m.id}" aria-label="なおす">${m.icon}</button>
+        <button class="avatar" data-edit="${m.id}" aria-label="なおす">${iconHTML(m.icon)}</button>
         <span class="nm">${esc(m.name)}${m.id === owner ? '<small>📱 この たんまつ</small>' : ''}</span>
         <button class="mini-btn" data-edit="${m.id}">なおす</button>
         <button class="mini-btn ${m.id === owner ? 'on' : ''}" data-owner="${m.id}">📱</button>
@@ -984,7 +1029,9 @@ function sanitizeRecord(r) {
 function sanitizeMember(m) {
   if (!m || typeof m !== 'object' || typeof m.id !== 'string' || !ID_RE.test(m.id)) return null;
   const name = cleanStr(m.name, 12).trim(); if (!name) return null;
-  const icon = typeof m.icon === 'string' && [...m.icon].length <= 4 ? m.icon : '🙂';
+  const icon = typeof m.icon !== 'string' ? '🙂'
+    : isImgIcon(m.icon) ? (m.icon.length <= ICON_IMG_MAX && ICON_IMG_RE.test(m.icon) ? m.icon : '🙂')
+    : [...m.icon].length <= 4 ? m.icon : '🙂';
   return { id: m.id, name, icon, updatedAt: cleanISO(m.updatedAt) || '1970-01-01T00:00:00.000Z' };
 }
 function importError(msg) { const e = new Error(msg); e.user = true; return e; }
@@ -1095,7 +1142,7 @@ function openImport() {
         <p>🔄 こうしん <span class="result-num">${p.update.length}</span>こ</p>
         ${p.del.length ? `<p>🗑️ けされた きろく <span class="result-num">${p.del.length}</span>こ</p>` : ''}
         <p class="muted">おなじ（かわらない） ${p.same}こ${p.skipped ? `・よめなかった ${p.skipped}こ` : ''}</p>
-        ${p.newMembers.length ? `<p>👋 あたらしい かぞく：${p.newMembers.map(m => `${m.icon}${esc(m.name)}`).join('、')}</p>` : ''}
+        ${p.newMembers.length ? `<p>👋 あたらしい かぞく：${p.newMembers.map(m => `${iconHTML(m.icon, true)}${esc(m.name)}`).join('、')}</p>` : ''}
       </div>
       ${total ? `<button class="big-btn" data-act="apply">✓ とりこむ</button>` : `<div class="info good center">もう ぜんぶ はいってるよ 👍</div>`}
       <button class="big-btn white" data-act="cancel">やめる</button>`;
@@ -1187,7 +1234,6 @@ async function openParents() {
    ========================================================= */
 function welcome() {
   return new Promise(resolve => {
-    let icon = '🐰';
     const el = h(`<section class="screen">
       <div class="screen-body"><div class="wrap" style="padding-top:calc(20px + var(--safe-t))">
         <div class="center"><img src="icons/icon-192.png" alt="" width="96" height="96" style="border-radius:24px;box-shadow:var(--shadow)">
@@ -1195,19 +1241,20 @@ function welcome() {
           <p class="muted" style="font-size:16px;line-height:1.8">みつけた ものを しゃしんと いっしょに<br>${R('地図', 'ちず')}に のこして いこう 🌸🐞🏯</p></div>
         <h3 class="q">あなたの なまえは？</h3>
         <input class="text-in" id="w-name" maxlength="12" autocomplete="off" placeholder="なまえ">
-        <h3 class="q">すきな どうぶつを えらんでね</h3>
-        <div class="animal-grid" id="w-animals">${ANIMALS.map(a => `<button data-a="${a}" class="${a === icon ? 'on' : ''}">${a}</button>`).join('')}</div>
+        <h3 class="q">すきな アイコンを せっていしよう</h3>
+        <p class="muted" style="margin:-4px 0 4px">＋ を おすと しゃしんから えらべるよ</p>
+        <div id="w-picker"></div>
         ${isStandalone() ? '' : `<div class="info warn" style="margin-top:18px"><h3>おうちの人へ</h3>Safari の共有ボタン →「ホーム画面に追加」で、アプリのように使えます。記録が消えにくくなるので、ぜひ追加してください。</div>`}
       </div></div>
       <footer class="screen-foot"><button class="save-btn" data-act="go">はじめる！</button></footer>
     </section>`);
+    const picker = iconPicker('🐰');
+    $('#w-picker', el).append(picker.el);
     el.addEventListener('click', async e => {
-      const a = e.target.closest('[data-a]');
-      if (a) { icon = a.dataset.a; $$('[data-a]', el).forEach(b => b.classList.toggle('on', b === a)); return; }
       if (e.target.closest('[data-act="go"]')) {
         const inp = $('#w-name', el); const name = inp.value.trim();
         if (!name) { inp.classList.add('shake'); setTimeout(() => inp.classList.remove('shake'), 500); inp.focus(); return; }
-        const m = await addMember({ name, icon });
+        const m = await addMember({ name, icon: picker.get() });
         await setSetting('deviceOwnerId', m.id); await setSetting('lastAuthorId', m.id);
         closeScreen(el); resolve();
       }
