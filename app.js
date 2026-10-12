@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -760,7 +760,7 @@ function openForm(existing, preset = null) {
         await dbPut('records', rec);
         S.records.set(rec.id, rec);
         if (f.authorId) setSetting('lastAuthorId', f.authorId);
-        refreshMarkers(); checkReminder();
+        refreshMarkers(); checkReminder(); refreshScreens();
         closeScreen(el);
         resolve(rec);
         if (isNew) {
@@ -858,6 +858,8 @@ function openCard(id) {
       ${r.tags.length ? `<div class="tags" style="margin-top:10px">${r.tags.map(t => `<span class="tag static on">${tagHTML(t)}</span>`).join('')}</div>` : ''}
       ${r.note ? `<div class="note-box">${esc(r.note)}</div>` : ''}
       ${r.question ? `<div class="note-box question">❓ ${esc(r.question)}</div>` : ''}
+      ${researchHTML(r)}
+      <button class="big-btn research" data-act="research">${hasResearch(r) ? '✏️ しらべたことを なおす' : '🔎 しらべたことを かく'}</button>
       ${series.length > 1 ? `<h3 class="q">🔁 ならべて みる（${series.length}かい）</h3>
         <div class="series">${series.map(x => `<button class="series-item ${x.id === r.id ? 'on' : ''}" data-sid="${x.id}"><span class="ph">${c.emoji}</span><small>${fmtDate(x.foundAt)}</small></button>`).join('')}</div>` : ''}
       <button class="big-btn again" data-act="again">🔁 ここで また みつけた</button>
@@ -887,6 +889,7 @@ function openCard(id) {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'close') closeScreen(el);
     else if (act === 'edit') { const saved = await openForm(S.records.get(id)); if (saved) render(); }
+    else if (act === 'research') { await openResearch(id); }
     else if (act === 'again') {
       const r = S.records.get(id);
       const saved = await openForm(null, { category: r.category, name: r.name, lat: r.lat, lng: r.lng, seriesId: seriesKey(r) });
@@ -900,13 +903,127 @@ function openCard(id) {
       await deletePhoto(r.photoId);
       const dead = { ...r, photoId: null, deleted: true, updatedAt: nowISO() };
       await dbPut('records', dead); S.records.set(id, dead);
-      refreshMarkers(); checkReminder();
+      refreshMarkers(); checkReminder(); refreshScreens();
       closeScreen(el); toast('けしたよ');
     }
   });
   el._onClose = () => { if (fullURL) setTimeout(() => URL.revokeObjectURL(fullURL), 400); };
+  el._refresh = render;
   openScreen(el);
   render();
+}
+
+
+/* =========================================================
+   🔎 しらべノート（ふしぎ → しらべた → わかった）
+   ========================================================= */
+const HOWS = [
+  { id: 'book', label: 'ずかん・本', emoji: '📕' },
+  { id: 'web', label: 'インターネット', emoji: '💻' },
+  { id: 'ask', label: 'ひとに きいた', emoji: '🗣️' },
+  { id: 'look', label: 'じぶんで かんさつ', emoji: '👀' },
+];
+const HOW = Object.fromEntries(HOWS.map(x => [x.id, x]));
+const HAKASE = [{ n: 5, icon: '🔍' }, { n: 10, icon: '🧪' }, { n: 30, icon: '🎓' }];
+const hasResearch = r => !!(r.research && r.research.text);
+
+// 開いている画面の中身を新しくする（記録が変わったとき）
+function refreshScreens() { $$('#screens > .screen').forEach(s => { if (!s._closing && s._refresh) s._refresh(); }); }
+
+function researchHTML(r) {
+  if (!hasResearch(r)) return '';
+  const x = r.research;
+  const how = (x.how || []).map(id => HOW[id]).filter(Boolean).map(h => `${h.emoji}${h.label}`).join('・');
+  const foot = [how, x.source ? `📝 ${esc(x.source)}` : ''].filter(Boolean).join('　');
+  return `<div class="note-box found">💡 ${esc(x.text)}${foot ? `<small>${foot}</small>` : ''}</div>`;
+}
+
+// しらべたことを書く画面。保存した記録を返す（やめたら null）
+function openResearch(id) {
+  return new Promise(resolve => {
+    const r = S.records.get(id);
+    const x = r.research || {};
+    const how = new Set(x.how || []);
+    const el = h(`<section class="screen">
+      <header class="screen-head">
+        <button class="icon-btn" data-act="close" aria-label="とじる">✕</button>
+        <h2>🔎 しらべたこと</h2><span class="spacer"></span>
+      </header>
+      <div class="screen-body"><div class="wrap">
+        <p class="muted">${CAT[r.category].emoji} ${esc(r.name) || 'なまえ まだ'}</p>
+        ${r.question ? `<div class="note-box question" style="margin-top:0">❓ ${esc(r.question)}</div>` : ''}
+        <h3 class="q">💡 わかったこと</h3>
+        <textarea class="text-in" id="rs-text" rows="4" maxlength="1000" placeholder="しらべて わかったことを かこう"></textarea>
+        <h3 class="q">どうやって しらべた？</h3>
+        <div class="tags">${HOWS.map(h => `<button class="tag" data-how="${h.id}">${h.emoji} ${h.label}</button>`).join('')}</div>
+        <h3 class="q">なにで しらべた？（なくても OK）</h3>
+        <input class="text-in" id="rs-source" maxlength="100" autocomplete="off" placeholder="れい：しょくぶつ ずかん">
+        ${hasResearch(r) ? `<button class="danger-btn" data-act="remove" style="margin-top:24px">しらべたことを けす</button>` : ''}
+      </div></div>
+      <footer class="screen-foot"><button class="save-btn" data-act="save">✓ ほぞん</button></footer>
+    </section>`);
+    const text = $('#rs-text', el), source = $('#rs-source', el);
+    text.value = x.text || ''; source.value = x.source || '';
+    const renderHow = () => $$('[data-how]', el).forEach(b => b.classList.toggle('on', how.has(b.dataset.how)));
+    async function put(research) {
+      const rec = { ...S.records.get(id), research, updatedAt: nowISO() };
+      await dbPut('records', rec); S.records.set(id, rec);
+      closeScreen(el); refreshScreens(); resolve(rec);
+    }
+    el.addEventListener('click', async e => {
+      const b = e.target.closest('[data-how]');
+      if (b) { how.has(b.dataset.how) ? how.delete(b.dataset.how) : how.add(b.dataset.how); renderHow(); return; }
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      if (act === 'close') { closeScreen(el); resolve(null); }
+      if (act === 'remove') {
+        if (!await ask({ icon: '🗑️', title: 'しらべたことを けす？', ok: 'けす', danger: true })) return;
+        await put(null); toast('けしたよ');
+      }
+      if (act === 'save') {
+        const t = text.value.trim();
+        if (!t) { text.classList.add('shake'); setTimeout(() => text.classList.remove('shake'), 500); toast('わかったことを かいてね'); return; }
+        const first = !hasResearch(S.records.get(id));
+        await put({ text: t.slice(0, 1000), how: HOWS.map(h => h.id).filter(h => how.has(h)), source: source.value.trim().slice(0, 100), at: nowISO() });
+        const n = liveRecords().filter(hasResearch).length;
+        const got = first && HAKASE.find(b => b.n === n);
+        toast(got ? `${got.icon} しらべはかせ ${n}こ たっせい！` : '💡 わかったこと を のこしたよ', 3000);
+      }
+    });
+    openScreen(el); renderHow();
+    if (!x.text) setTimeout(() => text.focus(), 350);
+  });
+}
+
+// 📖メニューの「しらべノート」
+function openNotebook() {
+  const el = screenShell('🔎 しらべノート');
+  const body = $('.wrap', el);
+  function render() {
+    const live = liveRecords();
+    const todo = live.filter(r => r.question && !hasResearch(r)).sort((a, b) => b.foundAt.localeCompare(a.foundAt));
+    const done = live.filter(hasResearch).sort((a, b) => b.research.at.localeCompare(a.research.at));
+    const item = (r, main, sub) => `<button class="nb-item" data-id="${r.id}"><span class="ph">${CAT[r.category].emoji}</span>
+      <span class="tx"><b>${main}</b><small>${sub}</small></span></button>`;
+    body.innerHTML = `
+      <div class="zk-summary"><span class="big">🔎</span><span class="cnt">しらべた<br>${done.length}こ</span>
+        <span class="medals">${HAKASE.map(b => `<span class="medal ${done.length >= b.n ? '' : 'off'}">${b.icon}<small>${b.n}こ</small></span>`).join('')}</span></div>
+      <h3 class="q">❓ まだ しらべていない ふしぎ（${todo.length}）</h3>
+      ${todo.length ? `<div class="nb-list">${todo.map(r => item(r, `❓ ${esc(r.question)}`, `${CAT[r.category].emoji} ${esc(r.name) || 'なまえ まだ'}`)).join('')}</div>`
+        : `<p class="muted">ふしぎは ぜんぶ しらべたよ 👍　きろくする ときに「❓ ふしぎに おもったこと」を かいてみよう</p>`}
+      <h3 class="q">💡 わかったこと（${done.length}）</h3>
+      ${done.length ? `<div class="nb-list">${done.map(r => item(r, `💡 ${esc(r.research.text)}`, `${CAT[r.category].emoji} ${esc(r.name) || 'なまえ まだ'}・${fmtDate(r.research.at)}`)).join('')}</div>`
+        : `<div class="empty"><span class="e">🔎</span>きろくカードの「しらべたことを かく」から はじめよう</div>`}`;
+    for (const b of $$('.nb-item', body)) {
+      const r = S.records.get(b.dataset.id);
+      thumbURL(r.photoId).then(u => { if (u) $('.ph', b).innerHTML = `<img src="${u}" alt="">`; });
+    }
+  }
+  el.addEventListener('click', e => {
+    if (e.target.closest('[data-act="close"]')) return closeScreen(el);
+    const it = e.target.closest('[data-id]'); if (it) openCard(it.dataset.id);
+  });
+  el._refresh = render;
+  openScreen(el); render();
 }
 
 /* =========================================================
@@ -917,6 +1034,7 @@ function openMenu() {
   const n = liveRecords().length;
   $('.wrap', el).innerHTML = `<div class="menu-list">
     <button class="menu-item" data-go="zukan"><span class="e">📚</span><span><b>ずかん</b><small>あつめた きろく ${n}こ</small></span></button>
+    <button class="menu-item" data-go="notebook"><span class="e">🔎</span><span><b>しらべノート</b><small>ふしぎ ${liveRecords().filter(r => r.question && !hasResearch(r)).length}こ・わかった ${liveRecords().filter(hasResearch).length}こ</small></span></button>
     <button class="menu-item" data-go="family"><span class="e">👨‍👩‍👧</span><span><b>かぞく</b><small>だれが みつけたか の なかま</small></span></button>
     <button class="menu-item" data-go="export"><span class="e">📤</span><span><b>かきだす</b><small>ファイルに して かぞくに おくる</small></span></button>
     <button class="menu-item" data-go="import"><span class="e">📥</span><span><b>とりこむ</b><small>もらった ファイルを がったい</small></span></button>
@@ -926,6 +1044,7 @@ function openMenu() {
     if (e.target.closest('[data-act="close"]')) return closeScreen(el);
     const go = e.target.closest('[data-go]')?.dataset.go;
     if (go === 'zukan') openZukan();
+    if (go === 'notebook') openNotebook();
     if (go === 'family') openFamily();
     if (go === 'export') openExport();
     if (go === 'import') openImport();
@@ -964,7 +1083,7 @@ function openZukan() {
         }).join('')}</div>`}
       ${list.length ? `<div class="grid">${list.map(r => {
         const k = CAT[r.category];
-        return `<button class="tile" data-id="${r.id}" style="--c:color-mix(in srgb, ${k.color} 30%, white)">${k.emoji}<span class="no">${k.emoji}${seq.get(r.id)}${r.question ? ' ❓' : ''}</span><span class="lbl">${esc(r.name) || 'なまえ まだ'}</span></button>`;
+        return `<button class="tile" data-id="${r.id}" style="--c:color-mix(in srgb, ${k.color} 30%, white)">${k.emoji}<span class="no">${k.emoji}${seq.get(r.id)}${hasResearch(r) ? ' 💡' : r.question ? ' ❓' : ''}</span><span class="lbl">${esc(r.name) || 'なまえ まだ'}</span></button>`;
       }).join('')}</div>` : `<div class="empty"><span class="e">🔍</span>まだ ないよ。<br>さがしに いこう！</div>`}`;
     for (const t of $$('.tile', body)) {
       const r = S.records.get(t.dataset.id);
@@ -1109,6 +1228,15 @@ function openExport() {
 /* ---------- 取り込み：中身のチェック ---------- */
 function cleanISO(v) { if (typeof v !== 'string' || v.length > 40) return null; const t = Date.parse(v); return isNaN(t) ? null : new Date(t).toISOString(); }
 function cleanStr(v, max) { return typeof v === 'string' ? v.slice(0, max) : ''; }
+function cleanResearch(x) {
+  if (!x || typeof x !== 'object' || typeof x.text !== 'string' || !x.text.trim()) return null;
+  return {
+    text: x.text.slice(0, 1000),
+    how: Array.isArray(x.how) ? x.how.filter(id => HOW[id]).slice(0, HOWS.length) : [],
+    source: cleanStr(x.source, 100),
+    at: cleanISO(x.at) || '1970-01-01T00:00:00.000Z',
+  };
+}
 function sanitizeRecord(r) {
   if (!r || typeof r !== 'object') return null;
   if (typeof r.id !== 'string' || !ID_RE.test(r.id)) return null;
@@ -1126,6 +1254,7 @@ function sanitizeRecord(r) {
     tags: Array.isArray(r.tags) ? r.tags.filter(t => typeof t === 'string').slice(0, 20).map(t => t.slice(0, 20)) : [],
     note: cleanStr(r.note, 1000),
     question: cleanStr(r.question, 100),
+    research: cleanResearch(r.research),
     seriesId: typeof r.seriesId === 'string' && ID_RE.test(r.seriesId) ? r.seriesId : null,
     lat: isFinite(lat) ? lat : 0, lng: isFinite(lng) ? lng : 0,
     accuracy: typeof r.accuracy === 'number' && isFinite(r.accuracy) ? Math.round(r.accuracy) : null,
@@ -1263,7 +1392,7 @@ function openImport() {
       body.innerHTML = `<div class="center" style="padding:30px 0"><div style="font-size:50px">🧩</div><b>がったい してるよ…</b><div class="progress"><div></div></div></div>`;
       try {
         await applyImport(plan, p => { const bar = $('.progress div', body); if (bar) bar.style.width = `${Math.round(p * 100)}%`; });
-        refreshMarkers(); checkReminder();
+        refreshMarkers(); checkReminder(); refreshScreens();
         const n = plan.add.length;
         body.innerHTML = `<div class="center" style="padding:30px 0"><div style="font-size:60px">🎉</div><b style="font-size:20px">とりこんだよ！</b>
           <p class="muted">あたらしい きろく ${n}こ・こうしん ${plan.update.length}こ</p></div>
