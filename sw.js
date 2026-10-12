@@ -1,6 +1,6 @@
 // アプリ本体だけをキャッシュする。地図タイル（別のサイト）はキャッシュしない。
 // 更新したときは CACHE の番号を上げる。
-const CACHE = 'mitsuketa-map-v1.0.2';
+const CACHE = 'mitsuketa-map-v1.1.0';
 const ASSETS = [
   './',
   'index.html',

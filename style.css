@@ -240,6 +240,19 @@ input[type="datetime-local"].text-in { font-size: 18px; -webkit-appearance: none
 .card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
 .card-actions button { min-height: 56px; border-radius: 16px; background: #fff; box-shadow: 0 0 0 2px var(--line) inset; font-weight: 800; font-size: 16px; }
 
+/* ---------- ふしぎ・ならべて みる ---------- */
+.note-box.question { background: #F1ECFB; }
+.big-btn.again { margin-top: 12px; min-height: 56px; font-size: 18px; letter-spacing: .02em; background: var(--mint-soft); color: #23805F; box-shadow: 0 0 0 2px #BFE8D8 inset; }
+.series { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.series::-webkit-scrollbar { display: none; }
+.series-item { flex: none; width: 84px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-weight: 700; color: var(--ink-soft); }
+.series-item .ph { width: 84px; height: 84px; border-radius: 14px; overflow: hidden; background: #F1EEF7; display: grid; place-items: center; font-size: 30px; }
+.series-item .ph img { width: 100%; height: 100%; object-fit: cover; }
+.series-item.on .ph { box-shadow: 0 0 0 3px var(--coral); }
+.series-item small { font-size: 12px; line-height: 2; }
+.zk-sub { margin-bottom: 4px; }
+.zk-sub .chip { height: 36px; font-size: 14px; }
+
 /* ---------- menu / lists ---------- */
 .menu-list { display: grid; gap: 12px; }
 .menu-item {

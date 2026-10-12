@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.1.0';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -103,6 +103,18 @@ async function setSetting(key, value) { S.settings[key] = value; await dbPut('se
 const liveRecords = () => [...S.records.values()].filter(r => !r.deleted);
 const memberOf = id => S.members.get(id);
 function memberLabel(id) { const m = memberOf(id); return m ? `${m.icon} ${esc(m.name)}` : '❔ だれか'; }
+
+// きせつ（見つけた月で決める）
+const SEASONS = [
+  { id: 'spring', label: 'はる', emoji: '🌱', months: [3, 4, 5] },
+  { id: 'summer', label: 'なつ', emoji: '🌻', months: [6, 7, 8] },
+  { id: 'autumn', label: 'あき', emoji: '🍁', months: [9, 10, 11] },
+  { id: 'winter', label: 'ふゆ', emoji: '⛄', months: [12, 1, 2] },
+];
+const seasonOf = iso => SEASONS.find(x => x.months.includes(new Date(iso).getMonth() + 1)).id;
+// 「また みつけた」で つながった記録（古い順）
+const seriesKey = r => r.seriesId || r.id;
+const seriesOf = r => liveRecords().filter(x => seriesKey(x) === seriesKey(r)).sort((a, b) => a.foundAt.localeCompare(b.foundAt));
 
 // カテゴリごとの通し番号（見つけた日時の順）
 function seqMap() {
@@ -403,14 +415,16 @@ function checkReminder() {
 /* =========================================================
    2. きろくする（新規・へんしゅう）
    ========================================================= */
-function openForm(existing) {
+// preset：「また みつけた」のとき、前の記録から引きつぐ中身（なまえ・カテゴリ・場所・つながり）
+function openForm(existing, preset = null) {
   return new Promise(resolve => {
     const isNew = !existing;
+    const base = existing || preset || {};
     const defaultAuthor = [S.settings.lastAuthorId, S.settings.deviceOwnerId, [...S.members.keys()][0]].find(id => id && S.members.has(id)) || null;
     const f = {
-      category: existing?.category || null,
+      category: base.category || null,
       tags: new Set(existing?.tags || []),
-      lat: existing?.lat ?? null, lng: existing?.lng ?? null,
+      lat: base.lat ?? null, lng: base.lng ?? null,
       accuracy: existing ? existing.accuracy : null,
       authorId: existing?.authorId || defaultAuthor,
       photoId: existing?.photoId || null,
@@ -419,7 +433,7 @@ function openForm(existing) {
     const el = h(`<section class="screen">
       <header class="screen-head">
         <button class="icon-btn" data-act="close" aria-label="とじる">✕</button>
-        <h2>${isNew ? 'きろくする' : 'へんしゅう'}</h2><span class="spacer"></span>
+        <h2>${!isNew ? 'へんしゅう' : preset ? '🔁 また みつけた' : 'きろくする'}</h2><span class="spacer"></span>
       </header>
       <div class="screen-body"><div class="wrap">
         <div class="photo-box" id="f-photo"></div>
@@ -444,6 +458,9 @@ function openForm(existing) {
         </div>
         <textarea class="text-in" id="f-note" rows="3" maxlength="500" placeholder="きづいたこと、おもったこと" hidden></textarea>
 
+        <h3 class="q">❓ ふしぎに おもったこと</h3>
+        <input class="text-in" id="f-question" maxlength="100" autocomplete="off" placeholder="なんで？ どうして？（なくても OK）">
+
         <h3 class="q">${R('場所', 'ばしょ')}</h3>
         <div class="loc-row">
           <div class="mini-map" id="f-minimap"></div>
@@ -463,8 +480,9 @@ function openForm(existing) {
       <footer class="screen-foot"><button class="save-btn" data-act="save">✓ ほぞん</button></footer>
     </section>`);
 
-    const name = $('#f-name', el), note = $('#f-note', el), when = $('#f-when', el);
-    name.value = existing?.name || '';
+    const name = $('#f-name', el), note = $('#f-note', el), when = $('#f-when', el), question = $('#f-question', el);
+    name.value = base.name || '';
+    question.value = existing?.question || '';
     note.value = existing?.note || '';
     note.hidden = !note.value;
     $('[data-act="write"]', el).classList.toggle('on', !note.hidden);
@@ -543,7 +561,7 @@ function openForm(existing) {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (!act) return;
       if (act === 'close') {
-        if (isNew && (f.newPhoto || name.value.trim() || f.category)) {
+        if (isNew && (f.newPhoto || question.value.trim() || (!preset && (name.value.trim() || f.category)))) {
           if (!await ask({ icon: '🤔', title: 'ほぞんしないで とじる？', ok: 'とじる', cancel: 'もどる' })) return;
         }
         closeScreen(el); resolve(null);
@@ -589,6 +607,8 @@ function openForm(existing) {
           name: name.value.trim().slice(0, 40),
           tags: [...f.tags],
           note: note.value.trim().slice(0, 500),
+          question: question.value.trim().slice(0, 100),
+          seriesId: existing?.seriesId || preset?.seriesId || null,
           lat: +f.lat.toFixed(6), lng: +f.lng.toFixed(6),
           accuracy: f.accuracy,
           photoId,
@@ -614,7 +634,8 @@ function openForm(existing) {
     openScreen(el);
     renderPhoto(); renderCats(); renderTags(); renderWho();
     setTimeout(() => { mini = makeMiniMap($('#f-minimap', el)); renderLoc(); setTimeout(() => mini && mini.invalidateSize(), 300); }, 50);
-    if (isNew) setTimeout(() => useHere(true), 350);
+    if (preset) setStatus(`🔁 まえと おなじ ${R('場所', 'ばしょ')}だよ`);
+    else if (isNew) setTimeout(() => useHere(true), 350);
     else if (existing.accuracy == null) setStatus(`🗺️ ${R('地図', 'ちず')}で えらんだ ${R('場所', 'ばしょ')}だよ`);
   });
 }
@@ -675,6 +696,7 @@ function openCard(id) {
     const r = S.records.get(id);
     if (!r || r.deleted) { closeScreen(el); return; }
     const c = CAT[r.category] || CAT.sonota;
+    const series = seriesOf(r);
     body.innerHTML = `
       <div class="card-photo" style="background:color-mix(in srgb, ${c.color} 22%, white)">${c.emoji}</div>
       <div style="margin-top:14px"><span class="badge" style="--c:${c.color}">${c.emoji} ${c.label}</span></div>
@@ -683,6 +705,10 @@ function openCard(id) {
         <span>${r.accuracy == null ? `🗺️ ${R('地図', 'ちず')}で えらんだ` : `📍 ±${r.accuracy}m`}</span></div>
       ${r.tags.length ? `<div class="tags" style="margin-top:10px">${r.tags.map(t => `<span class="tag static on">${tagHTML(t)}</span>`).join('')}</div>` : ''}
       ${r.note ? `<div class="note-box">${esc(r.note)}</div>` : ''}
+      ${r.question ? `<div class="note-box question">❓ ${esc(r.question)}</div>` : ''}
+      ${series.length > 1 ? `<h3 class="q">🔁 ならべて みる（${series.length}かい）</h3>
+        <div class="series">${series.map(x => `<button class="series-item ${x.id === r.id ? 'on' : ''}" data-sid="${x.id}"><span class="ph">${c.emoji}</span><small>${fmtDate(x.foundAt)}</small></button>`).join('')}</div>` : ''}
+      <button class="big-btn again" data-act="again">🔁 ここで また みつけた</button>
       <div class="count-box"><span>${c.emoji}</span><span class="grow">${c.label} <b>${seqOf(r)}</b> こめ！</span><span>🏅</span></div>
       <div class="card-actions">
         <button data-act="map">🗺️ ${R('地図', 'ちず')}で ${R('見', 'み')}る</button>
@@ -697,12 +723,23 @@ function openCard(id) {
         $('img', box).addEventListener('click', () => lightbox(fullURL));
       }
     }
+    for (const b of $$('.series-item', body)) {
+      const x = S.records.get(b.dataset.sid);
+      thumbURL(x.photoId).then(u => { if (u) $('.ph', b).innerHTML = `<img src="${u}" alt="">`; });
+    }
   }
 
   el.addEventListener('click', async e => {
+    const sb = e.target.closest('[data-sid]');
+    if (sb) { if (sb.dataset.sid !== id) { id = sb.dataset.sid; render(); body.parentElement.scrollTop = 0; } return; }
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'close') closeScreen(el);
     else if (act === 'edit') { const saved = await openForm(S.records.get(id)); if (saved) render(); }
+    else if (act === 'again') {
+      const r = S.records.get(id);
+      const saved = await openForm(null, { category: r.category, name: r.name, lat: r.lat, lng: r.lng, seriesId: seriesKey(r) });
+      if (saved) { id = saved.id; render(); }
+    }
     else if (act === 'map') { closeAllScreens(); setTimeout(() => showRecordOnMap(id, { bounce: true }), 320); }
     else if (act === 'delete') {
       if (!await ask({ icon: '🗑️', title: 'この きろくを けす？', ok: 'けす', cancel: 'やめる', danger: true })) return;
@@ -749,9 +786,10 @@ function openMenu() {
 function openZukan() {
   const el = screenShell('📚 ずかん');
   const body = $('.wrap', el);
-  let tab = 'all';
+  let tab = 'all', season = 'all', onlyQ = false;
   async function render() {
-    const live = liveRecords();
+    const all = liveRecords();
+    const live = all.filter(r => (season === 'all' || seasonOf(r.foundAt) === season) && (!onlyQ || r.question));
     const counts = Object.fromEntries(CATS.map(c => [c.id, live.filter(r => r.category === c.id).length]));
     const items = [{ id: 'all', label: 'ぜんぶ', emoji: '', color: 'var(--coral)' }, ...CATS];
     const list = live.filter(r => tab === 'all' || r.category === tab)
@@ -760,6 +798,11 @@ function openZukan() {
     const n = tab === 'all' ? live.length : counts[tab];
     const seq = seqMap();
     body.innerHTML = `
+      <div class="zk-tabs zk-sub">
+        <button class="chip ${onlyQ ? 'on' : ''}" data-q="1" style="--c:var(--lavender)">❓ふしぎ ${all.filter(r => r.question).length}</button>
+        <button class="chip ${season === 'all' ? 'on' : ''}" data-season="all" style="--c:var(--mint)">いつでも</button>
+        ${SEASONS.map(x => `<button class="chip ${season === x.id ? 'on' : ''}" data-season="${x.id}" style="--c:var(--mint)">${x.emoji}${x.label}</button>`).join('')}
+      </div>
       <div class="zk-tabs">${items.map(i => `<button class="chip ${tab === i.id ? 'on' : ''}" data-tab="${i.id}" style="--c:${i.color}">${i.emoji}${i.label} ${i.id === 'all' ? live.length : counts[i.id]}</button>`).join('')}</div>
       ${c ? `<div class="zk-summary"><span class="big">${c.emoji}</span><span class="cnt">${c.label}<br>${n}こ</span>
         <span class="medals">${BADGES.map(b => `<span class="medal ${n >= b.n ? '' : 'off'}">${b.icon}<small>${b.n}こ</small></span>`).join('')}</span></div>`
@@ -769,7 +812,7 @@ function openZukan() {
         }).join('')}</div>`}
       ${list.length ? `<div class="grid">${list.map(r => {
         const k = CAT[r.category];
-        return `<button class="tile" data-id="${r.id}" style="--c:color-mix(in srgb, ${k.color} 30%, white)">${k.emoji}<span class="no">${k.emoji}${seq.get(r.id)}</span><span class="lbl">${esc(r.name) || 'なまえ まだ'}</span></button>`;
+        return `<button class="tile" data-id="${r.id}" style="--c:color-mix(in srgb, ${k.color} 30%, white)">${k.emoji}<span class="no">${k.emoji}${seq.get(r.id)}${r.question ? ' ❓' : ''}</span><span class="lbl">${esc(r.name) || 'なまえ まだ'}</span></button>`;
       }).join('')}</div>` : `<div class="empty"><span class="e">🔍</span>まだ ないよ。<br>さがしに いこう！</div>`}`;
     for (const t of $$('.tile', body)) {
       const r = S.records.get(t.dataset.id);
@@ -779,6 +822,8 @@ function openZukan() {
   el.addEventListener('click', e => {
     if (e.target.closest('[data-act="close"]')) return closeScreen(el);
     const t = e.target.closest('[data-tab]'); if (t) { tab = t.dataset.tab; render(); return; }
+    const se = e.target.closest('[data-season]'); if (se) { season = se.dataset.season; render(); return; }
+    if (e.target.closest('[data-q]')) { onlyQ = !onlyQ; render(); return; }
     const tile = e.target.closest('[data-id]'); if (tile) openCard(tile.dataset.id);
   });
   el._refresh = render;
@@ -928,6 +973,8 @@ function sanitizeRecord(r) {
     name: cleanStr(r.name, 40),
     tags: Array.isArray(r.tags) ? r.tags.filter(t => typeof t === 'string').slice(0, 20).map(t => t.slice(0, 20)) : [],
     note: cleanStr(r.note, 1000),
+    question: cleanStr(r.question, 100),
+    seriesId: typeof r.seriesId === 'string' && ID_RE.test(r.seriesId) ? r.seriesId : null,
     lat: isFinite(lat) ? lat : 0, lng: isFinite(lng) ? lng : 0,
     accuracy: typeof r.accuracy === 'number' && isFinite(r.accuracy) ? Math.round(r.accuracy) : null,
     photoId: !deleted && typeof r.photoId === 'string' && ID_RE.test(r.photoId) ? r.photoId : null,
