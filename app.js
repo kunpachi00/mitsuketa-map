@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
