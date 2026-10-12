@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -1173,6 +1173,10 @@ function welcome() {
    起動
    ========================================================= */
 async function start() {
+  // 最初の画面を待たずに登録して、ホーム画面アプリとして動けるようにする
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
+  }
   try {
     const [records, members, settings] = await Promise.all([dbAll('records'), dbAll('members'), dbAll('settings')]);
     records.forEach(r => S.records.set(r.id, r));
@@ -1195,9 +1199,5 @@ async function start() {
   try { const pos = await getPosition(); drawMe(pos); S.map.setView([pos.lat, pos.lng], 16); }
   catch { if (liveRecords().length) fitAll(); }
   checkReminder();
-
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
-  }
 }
 start();
