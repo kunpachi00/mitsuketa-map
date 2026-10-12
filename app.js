@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -1219,11 +1219,37 @@ function welcome() {
 /* =========================================================
    起動
    ========================================================= */
+// 新しい版を見つけたら自動で切りかえる。入力の途中では切りかえず、地図の画面に戻るまで待つ
+function setupUpdates() {
+  if (!('serviceWorker' in navigator) || location.protocol !== 'https:') return;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const check = () => reg.update().catch(() => { });
+    // ホーム画面アプリは閉じずに裏で残るので、前に出てきたときにも確かめる
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+    setInterval(check, 60 * 60 * 1000);
+  }).catch(e => console.warn('sw', e));
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return; // はじめて入ったときは読みこみ直さない
+    const tryReload = () => {
+      if ($('#screens .screen') || $('#modal-root').children.length) { setTimeout(tryReload, 3000); return; }
+      reloading = true;
+      try { sessionStorage.setItem('updated', '1'); } catch { }
+      location.reload();
+    };
+    tryReload();
+  });
+  try {
+    if (sessionStorage.getItem('updated')) {
+      sessionStorage.removeItem('updated');
+      setTimeout(() => toast(`✨ アプリが あたらしく なったよ（v${APP_VERSION}）`, 3000), 800);
+    }
+  } catch { }
+}
+
 async function start() {
-  // 最初の画面を待たずに登録して、ホーム画面アプリとして動けるようにする
-  if ('serviceWorker' in navigator && location.protocol === 'https:') {
-    navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
-  }
+  setupUpdates();
   try {
     const [records, members, settings] = await Promise.all([dbAll('records'), dbAll('members'), dbAll('settings')]);
     records.forEach(r => S.records.set(r.id, r));
