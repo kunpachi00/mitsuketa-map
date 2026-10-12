@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -196,6 +196,103 @@ function getPosition() {
   });
 }
 
+/* ---------- 地図の検索（地名・公園・住所など） ----------
+   検索した言葉だけを OpenStreetMap の検索サーバー（Nominatim）に送る。記録・写真・現在地は送らない。
+   利用ルール：1秒に1回まで・入力ごとの自動検索はしない・出典を表示する。
+   見つからないときは国土地理院の住所検索でも探す。 */
+const SEARCH_ATTR = '検索：© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+let lastSearchAt = 0;
+function placeEmoji(x) {
+  const c = x.category, t = x.type;
+  if (c === 'leisure' && /park|garden|playground|nature_reserve/.test(t)) return '🌳';
+  if (c === 'natural' && /peak|volcano|hill/.test(t)) return '⛰️';
+  if (c === 'natural' || c === 'water' || c === 'waterway' || t === 'water' || t === 'lake') return '💧';
+  if (c === 'railway' || t === 'station' || t === 'bus_stop') return '🚉';
+  if (c === 'historic' || t === 'castle' || t === 'shrine' || t === 'place_of_worship') return '🏯';
+  if (c === 'tourism' || c === 'man_made') return '⭐';
+  if (c === 'amenity' && /school|kindergarten|library|university/.test(t)) return '🏫';
+  if (c === 'amenity' || c === 'shop') return '🏪';
+  return '📍';
+}
+async function searchPlaces(q, near) {
+  const wait = lastSearchAt + 1100 - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastSearchAt = Date.now();
+  const p = new URLSearchParams({ q, format: 'jsonv2', countrycodes: 'jp', limit: '8', 'accept-language': 'ja' });
+  if (near) { // いま見ている あたりを 先に出す（ほかの場所も出る）
+    const d = 0.3;
+    p.set('viewbox', [near.lng - d, near.lat + d, near.lng + d, near.lat - d].join(','));
+  }
+  const res = await fetch('https://nominatim.openstreetmap.org/search?' + p, { referrerPolicy: 'strict-origin-when-cross-origin' });
+  if (!res.ok) throw new Error('search ' + res.status);
+  const list = (await res.json()).map(x => {
+    const parts = String(x.display_name || '').split(',').map(s => s.trim())
+      .filter(s => s && s !== '日本' && !/^\d{3}-?\d{4}$/.test(s));
+    const name = x.name || parts[0] || q;
+    const sub = parts.filter(s => s !== name).slice(-3).reverse().join(' ');
+    return { name, sub, lat: +x.lat, lng: +x.lon, emoji: placeEmoji(x) };
+  }).filter(x => isFinite(x.lat) && isFinite(x.lng));
+  if (list.length) return list;
+  // 住所は国土地理院でも探す
+  const r2 = await fetch('https://msearch.gsi.go.jp/address-search/AddressSearch?q=' + encodeURIComponent(q));
+  if (!r2.ok) return [];
+  return (await r2.json()).slice(0, 8).map(x => ({
+    name: x.properties.title, sub: '', lat: +x.geometry.coordinates[1], lng: +x.geometry.coordinates[0], emoji: '📍',
+  })).filter(x => isFinite(x.lat) && isFinite(x.lng));
+}
+// 検索の窓。えらんだ場所を返す（やめたら null）
+function searchDialog(near) {
+  return new Promise(resolve => {
+    const box = h(`<div class="search-box">
+      <h3>🔍 ばしょを さがす</h3>
+      <form class="search-row" autocomplete="off">
+        <input class="text-in" type="search" enterkeyhint="search" maxlength="60" placeholder="こうえん・じゅうしょ・たてもの など">
+        <button class="search-go" type="submit" aria-label="さがす">🔍</button>
+      </form>
+      <div class="search-list"></div>
+      <p class="search-attr">${SEARCH_ATTR}</p>
+      <div class="m-btns"><button data-v="0">とじる</button></div>
+    </div>`);
+    const input = $('input', box), list = $('.search-list', box);
+    let results = [];
+    const m = modal(box, { onBack: () => { m.close(); resolve(null); } });
+    setTimeout(() => input.focus(), 50);
+    $('form', box).addEventListener('submit', async e => {
+      e.preventDefault();
+      const q = input.value.trim(); if (!q) return;
+      input.blur();
+      list.innerHTML = '<p class="muted center">さがしてるよ…</p>';
+      try {
+        results = await searchPlaces(q, near);
+        list.innerHTML = results.length
+          ? results.map((x, i) => `<button class="search-item" data-i="${i}"><span class="e">${x.emoji}</span><span><b>${esc(x.name)}</b>${x.sub ? `<small>${esc(x.sub)}</small>` : ''}</span></button>`).join('')
+          : '<p class="muted center">みつからなかったよ。ことばを かえてみてね</p>';
+      } catch (err) {
+        console.error(err);
+        list.innerHTML = `<p class="muted center">${navigator.onLine === false ? 'ネットに つながっていないみたい' : 'いまは さがせなかったよ。すこし まってね'}</p>`;
+      }
+    });
+    box.addEventListener('click', e => {
+      const it = e.target.closest('[data-i]');
+      if (it) { m.close(); resolve(results[+it.dataset.i]); return; }
+      if (e.target.closest('[data-v]')) { m.close(); resolve(null); }
+    });
+  });
+}
+let searchMarker = null;
+async function searchOnMap() {
+  const c = S.map.getCenter();
+  const x = await searchDialog({ lat: c.lat, lng: c.lng });
+  if (!x) return;
+  if (searchMarker) searchMarker.remove();
+  searchMarker = L.marker([x.lat, x.lng], {
+    icon: L.divIcon({ className: 'found-wrap', html: `<div class="found-pin">${x.emoji}</div>`, iconSize: [40, 40], iconAnchor: [20, 20] }),
+    interactive: false, zIndexOffset: 900,
+  }).addTo(S.map);
+  S.map.setView([x.lat, x.lng], 16);
+  toast(`${x.emoji} ${esc(x.name)}`);
+}
+
 /* ---------- トースト・モーダル ---------- */
 let toastTimer;
 function toast(msg, ms = 2600) {
@@ -372,6 +469,7 @@ function initMap() {
   $('#btn-locate').addEventListener('click', () => locateMe(true));
   $('#btn-add').addEventListener('click', () => openForm(null));
   $('#btn-menu').addEventListener('click', openMenu);
+  $('#btn-search').addEventListener('click', searchOnMap);
 }
 
 function renderFilters() {
@@ -691,7 +789,8 @@ function pickLocation(start, catId) {
     const el = h(`<section class="screen">
       <header class="screen-head">
         <button class="icon-btn" data-act="close" aria-label="やめる">✕</button>
-        <h2>${R('場所', 'ばしょ')}を えらぶ</h2><span class="spacer"></span>
+        <h2>${R('場所', 'ばしょ')}を えらぶ</h2>
+        <button class="icon-btn" data-act="search" aria-label="ばしょを さがす">🔍</button>
       </header>
       <div class="screen-body nopad">
         <div class="picker-map" id="pk-map"></div>
@@ -710,6 +809,14 @@ function pickLocation(start, catId) {
     el.addEventListener('click', e => {
       const act = e.target.closest('[data-act]')?.dataset.act;
       if (act === 'close') { closeScreen(el); resolve(null); }
+      if (act === 'search') {
+        const c = pm.getCenter();
+        searchDialog({ lat: c.lat, lng: c.lng }).then(x => {
+          if (!x) return;
+          pm.setView([x.lat, x.lng], 17); place(L.latLng(x.lat, x.lng));
+          toast(`${x.emoji} ${esc(x.name)}に ピンを おいたよ`);
+        });
+      }
       if (act === 'ok') {
         if (!chosen) { toast('ちずを タップして ばしょを えらんでね'); return; }
         closeScreen(el); resolve(chosen);
@@ -1213,7 +1320,8 @@ async function openParents() {
       <h3>🗺️ 出典・ライセンス</h3>
       <p>地図：<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank" rel="noopener">地理院タイル</a>（国土地理院）</p>
       <p class="muted">「しゃしん」の地図：データソース Landsat8画像（GSI,TSIC,GEO Grid/AIST）、Landsat8画像（courtesy of the U.S. Geological Survey）、海底地形（GEBCO）、GRUS画像（© Axelspace）を含みます。</p>
-      <p class="muted">Leaflet（BSD-2-Clause）／Leaflet.markercluster（MIT）／JSZip（MIT または GPLv3）を同梱しています。解析ツール・広告・外部送信はありません（地図画像の読み込みのみ国土地理院のサーバーと通信します）。</p>
+      <p class="muted">Leaflet（BSD-2-Clause）／Leaflet.markercluster（MIT）／JSZip（MIT または GPLv3）を同梱しています。解析ツール・広告はありません。外部との通信は、地図画像の読み込み（国土地理院）と、🔍で検索したときの検索語の送信（OpenStreetMap の検索サーバー Nominatim。見つからないときは国土地理院の住所検索）だけです。記録・写真・現在地は送りません。</p>
+      <p class="muted">検索：© OpenStreetMap contributors（ODbL）</p>
       <p class="muted">みつけたマップ v${APP_VERSION}</p>
     </div>
     <button class="danger-btn" data-act="reset">⚠️ 記録をリセット</button>`;
