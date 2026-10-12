@@ -1,6 +1,6 @@
 // アプリ本体だけをキャッシュする。地図タイル（別のサイト）はキャッシュしない。
 // 更新したときは CACHE の番号を上げる。
-const CACHE = 'mitsuketa-map-v1.0.1';
+const CACHE = 'mitsuketa-map-v1.0.2';
 const ASSETS = [
   './',
   'index.html',
@@ -18,7 +18,10 @@ const ASSETS = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  // ブラウザのキャッシュに残った古いファイルを拾わないよう、必ずサーバーから取り直す
+  e.waitUntil(caches.open(CACHE)
+    .then(c => c.addAll(ASSETS.map(u => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
