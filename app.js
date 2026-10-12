@@ -6,7 +6,7 @@
    - 家族との共有は zip の書き出し／取り込み
    ========================================================= */
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 const APP_ID = 'mitsuketa-map';
 const DATA_FORMAT = 1;
 
@@ -36,6 +36,21 @@ const BASES = {
 const REMIND_DAYS = 14;
 const REMIND_COUNT = 10;
 const ACCURACY_WARN = 100;
+// てんき（空を見て えらぶ）と きおんの かんじ
+const SKIES = [
+  { id: 'sunny', label: 'はれ', emoji: '☀️' }, { id: 'cloudy', label: 'くもり', emoji: '⛅' },
+  { id: 'rain', label: 'あめ', emoji: '☔' }, { id: 'snow', label: 'ゆき', emoji: '⛄' }, { id: 'windy', label: 'かぜ', emoji: '🌬️' },
+];
+const FEELS = [
+  { id: 'hot', label: 'あつい', emoji: '🥵' }, { id: 'nice', label: 'ちょうどいい', emoji: '🙂' },
+  { id: 'cool', label: 'すずしい', emoji: '🧥' }, { id: 'cold', label: 'さむい', emoji: '🥶' },
+];
+const SKY = Object.fromEntries(SKIES.map(x => [x.id, x]));
+const FEEL = Object.fromEntries(FEELS.map(x => [x.id, x]));
+function weatherText(w) {
+  if (!w) return '';
+  return [SKY[w.sky], FEEL[w.feel]].filter(Boolean).map(x => `${x.emoji} ${x.label}`).join('・');
+}
 const IMPORT_LIMITS = { zip: 500 * 1024 * 1024, json: 20 * 1024 * 1024, photo: 15 * 1024 * 1024, records: 20000, members: 200 };
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
@@ -571,6 +586,7 @@ function openForm(existing, preset = null) {
       accuracy: existing ? existing.accuracy : null,
       authorId: existing?.authorId || defaultAuthor,
       photoId: existing?.photoId || null,
+      sky: existing?.weather?.sky || null, feel: existing?.weather?.feel || null,
       newPhoto: null, removePhoto: false, saving: false,
     };
     const el = h(`<section class="screen">
@@ -613,6 +629,11 @@ function openForm(existing, preset = null) {
           </div>
         </div>
         <p class="loc-status" id="f-locstatus"></p>
+
+        <h3 class="q">てんきは？</h3>
+        <div class="tags" id="f-sky">${SKIES.map(x => `<button class="tag" data-sky="${x.id}">${x.emoji} ${x.label}</button>`).join('')}</div>
+        <h3 class="q">🌡️ きおんの かんじ</h3>
+        <div class="tags" id="f-feel">${FEELS.map(x => `<button class="tag" data-feel="${x.id}">${x.emoji} ${x.label}</button>`).join('')}</div>
 
         <h3 class="q">だれが みつけた？</h3>
         <div class="who" id="f-who"></div>
@@ -657,6 +678,10 @@ function openForm(existing, preset = null) {
     function renderCats() { $$('.cat-btn', el).forEach(b => b.classList.toggle('on', b.dataset.cat === f.category)); }
     // シール
     function renderTags() { $$('[data-tag]', el).forEach(b => b.classList.toggle('on', f.tags.has(b.dataset.tag))); }
+    function renderWeather() {
+      $$('[data-sky]', el).forEach(b => b.classList.toggle('on', b.dataset.sky === f.sky));
+      $$('[data-feel]', el).forEach(b => b.classList.toggle('on', b.dataset.feel === f.feel));
+    }
     // だれが
     function renderWho() {
       const box = $('#f-who', el);
@@ -697,6 +722,10 @@ function openForm(existing, preset = null) {
     el.addEventListener('click', async e => {
       const cat = e.target.closest('[data-cat]');
       if (cat) { f.category = cat.dataset.cat; renderCats(); renderLoc(); return; }
+      const sky = e.target.closest('[data-sky]');
+      if (sky) { f.sky = f.sky === sky.dataset.sky ? null : sky.dataset.sky; renderWeather(); return; } // もう一度 おすと はずれる
+      const feel = e.target.closest('[data-feel]');
+      if (feel) { f.feel = f.feel === feel.dataset.feel ? null : feel.dataset.feel; renderWeather(); return; }
       const tag = e.target.closest('[data-tag]');
       if (tag) { const t = tag.dataset.tag; f.tags.has(t) ? f.tags.delete(t) : f.tags.add(t); renderTags(); return; }
       const who = e.target.closest('[data-who]');
@@ -751,6 +780,7 @@ function openForm(existing, preset = null) {
           tags: [...f.tags],
           note: note.value.trim().slice(0, 500),
           question: question.value.trim().slice(0, 100),
+          weather: f.sky || f.feel ? { sky: f.sky, feel: f.feel } : null,
           seriesId: existing?.seriesId || preset?.seriesId || null,
           lat: +f.lat.toFixed(6), lng: +f.lng.toFixed(6),
           accuracy: f.accuracy,
@@ -775,7 +805,7 @@ function openForm(existing, preset = null) {
 
     el._onClose = () => { if (previewURL) URL.revokeObjectURL(previewURL); if (mini) mini.remove(); };
     openScreen(el);
-    renderPhoto(); renderCats(); renderTags(); renderWho();
+    renderPhoto(); renderCats(); renderTags(); renderWeather(); renderWho();
     setTimeout(() => { mini = makeMiniMap($('#f-minimap', el)); renderLoc(); setTimeout(() => mini && mini.invalidateSize(), 300); }, 50);
     if (preset) setStatus(`🔁 まえと おなじ ${R('場所', 'ばしょ')}だよ`);
     else if (isNew) setTimeout(() => useHere(true), 350);
@@ -853,7 +883,7 @@ function openCard(id) {
       <div class="card-photo" style="background:color-mix(in srgb, ${c.color} 22%, white)">${c.emoji}</div>
       <div style="margin-top:14px"><span class="badge" style="--c:${c.color}">${c.emoji} ${c.label}</span></div>
       <h1 class="card-name ${r.name ? '' : 'none'}">${esc(r.name) || 'なまえ まだ'}</h1>
-      <div class="meta"><span>📅 ${fmtDate(r.foundAt, new Date(r.foundAt).getFullYear() !== new Date().getFullYear())}</span><span>${memberLabel(r.authorId)}</span>
+      <div class="meta"><span>📅 ${fmtDate(r.foundAt, new Date(r.foundAt).getFullYear() !== new Date().getFullYear())}</span>${r.weather ? `<span>${weatherText(r.weather)}</span>` : ''}<span>${memberLabel(r.authorId)}</span>
         <span>${r.accuracy == null ? `🗺️ ${R('地図', 'ちず')}で えらんだ` : `📍 ±${r.accuracy}m`}</span></div>
       ${r.tags.length ? `<div class="tags" style="margin-top:10px">${r.tags.map(t => `<span class="tag static on">${tagHTML(t)}</span>`).join('')}</div>` : ''}
       ${r.note ? `<div class="note-box">${esc(r.note)}</div>` : ''}
@@ -1255,6 +1285,8 @@ function sanitizeRecord(r) {
     note: cleanStr(r.note, 1000),
     question: cleanStr(r.question, 100),
     research: cleanResearch(r.research),
+    weather: r.weather && typeof r.weather === 'object' && (SKY[r.weather.sky] || FEEL[r.weather.feel])
+      ? { sky: SKY[r.weather.sky] ? r.weather.sky : null, feel: FEEL[r.weather.feel] ? r.weather.feel : null } : null,
     seriesId: typeof r.seriesId === 'string' && ID_RE.test(r.seriesId) ? r.seriesId : null,
     lat: isFinite(lat) ? lat : 0, lng: isFinite(lng) ? lng : 0,
     accuracy: typeof r.accuracy === 'number' && isFinite(r.accuracy) ? Math.round(r.accuracy) : null,
